@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false">
+  <style>.eco-fractal-voyager-b{fill:var(--eco-applications-surface,#faecff);stroke:var(--eco-applications-ink,#863ca4);stroke-opacity:.18}.eco-fractal-voyager-g{fill:none;stroke:var(--eco-applications-ink,#863ca4);stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}.eco-fractal-voyager-a{fill:var(--eco-applications-ink,#863ca4)}@media (prefers-color-scheme:dark){.eco-fractal-voyager-b{fill:var(--eco-applications-surface,#32213a);stroke:var(--eco-applications-ink,#dba6f3)}.eco-fractal-voyager-g{stroke:var(--eco-applications-ink,#dba6f3)}.eco-fractal-voyager-a{fill:var(--eco-applications-ink,#dba6f3)}}.dark .eco-fractal-voyager-b{fill:var(--eco-applications-surface,#32213a);stroke:var(--eco-applications-ink,#dba6f3)}.dark .eco-fractal-voyager-g{stroke:var(--eco-applications-ink,#dba6f3)}.dark .eco-fractal-voyager-a{fill:var(--eco-applications-ink,#dba6f3)}</style>
+  <rect class="eco-fractal-voyager-b" x=".5" y=".5" width="23" height="23" rx="5.5"/>
+  <g class="eco-fractal-voyager-g">
+    <path d="M15 13.75a3 3 0 0 0-6 0a4.5 4.5 0 0 0 9 0a6 6 0 0 0-12 0"/>
+  </g>
+  <path class="eco-fractal-voyager-a" d="M15 12.25a1.5 1.5 0 1 1 0 3a1.5 1.5 0 1 1 0-3z"/>
+</svg>
