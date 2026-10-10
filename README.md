@@ -28,7 +28,7 @@ It has two parts:
 ## Status
 
 - The web explorer runs from this repository as-is; no build step.
-- The MIND reference builds and passes its checks with the released `mindc` v0.10.2 (CPU target).
+- The MIND reference compiles with the released `mindc` v0.10.2 and passes its checks. `mindc run` also needs the MIND CPU runtime, which the public release does not include; `scripts/run-checks.sh` builds the same kernel from `mindc`'s MLIR output with a stock LLVM toolchain instead, and that is what CI runs.
 - The shaders are written by hand. The public `mindc` release does not generate WGSL or GLSL; the MIND kernel is a checked reference for the shader maths, not their source.
 - CI compiles and runs the MIND checks and validates every shader (WGSL with naga, GLSL with glslang).
 
@@ -59,11 +59,10 @@ Requires `mindc` and an LLVM toolchain with `mlir-opt`, `mlir-translate` and `cl
 ```bash
 curl -sSL https://mindlang.dev/install.sh | sh   # installs mindc
 mindc check src/main.mind                        # format, lint and type check
-mindc run                                        # build, run the checks
-echo $?                                          # 0 = all checks passed
+scripts/run-checks.sh                            # build with LLVM, run the checks
 ```
 
-The exit code is the number of failed checks.
+The script exits 0 only when every check passes. With the MIND CPU runtime installed, `mindc run` builds and runs the same checks directly; its exit code is the number of failed checks.
 
 ### Validate the shaders
 
@@ -83,7 +82,7 @@ glslangValidator build/shaders/fractal.frag
 - **Escape-time iteration** for all four fractals with escape radius 256, including the O(1) main-cardioid and period-2-bulb test that skips interior Mandelbrot points.
 - **Palettes** Electric, Fire, Ocean and Grayscale, packed to 8-bit RGB.
 
-`mindc run` checks single points, the cardioid test, palette colours and whole 48 × 27 frames for each fractal. Each frame is checked at zoom 1 with 100 iterations and at zoom 2 with 130 iterations, which is the demo's own iteration budget at that zoom. The expected values come from an independent double-precision implementation of the same definitions.
+The program checks single points, the cardioid test, palette colours and whole 48 × 27 frames for each fractal. Each frame is checked at zoom 1 with 100 iterations and at zoom 2 with 130 iterations, which is the demo's own iteration budget at that zoom. The expected values come from an independent double-precision implementation of the same definitions.
 
 The reference computes in `f64` and the shaders in `f32`, so escape counts agree away from the set boundary and may differ for boundary pixels. The smooth (fractional) iteration count and the Neon, Psychedelic, Plasma and Galaxy palettes need `log`/`sin` and are not ported yet; the reasons are noted in the source.
 
@@ -111,6 +110,7 @@ Palettes: Electric, Fire, Ocean, Neon, Grayscale, Psychedelic, Plasma, Galaxy.
 | `web/mindlang.mp3` | Default soundtrack for audio-reactive mode |
 | `src/main.mind` | MIND reference kernel and known-answer checks |
 | `Mind.toml` | MIND project manifest |
+| `scripts/run-checks.sh`, `scripts/print-shim.c` | Builds the MIND kernel with LLVM and runs its known-answer checks |
 | `scripts/extract-shaders.mjs` | Extracts the inline shaders for validation |
 | `.github/workflows/ci.yml` | CI: MIND checks and shader validation |
 

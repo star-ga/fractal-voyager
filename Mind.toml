@@ -1,7 +1,8 @@
 # Fractal Voyager - MIND project manifest
 #
 # `mindc run` builds src/main.mind for the CPU and runs its known-answer
-# checks; the exit code is the number of failed checks (0 = pass).
+# checks; the exit code is the number of failed checks (0 = pass). It needs
+# the MIND CPU runtime; without it, scripts/run-checks.sh runs the same checks.
 
 [package]
 name = "fractal-voyager"

@@ -40,8 +40,11 @@ jobs:
       - name: Check (format, lint, types)
         run: mindc check src/main.mind
 
+      # `mindc run` needs the licensed MIND CPU runtime, which the public
+      # mindc release does not include. Build from mindc's MLIR output with
+      # LLVM 20 instead and run the same known-answer checks.
       - name: Build and run known-answer checks
-        run: mindc run
+        run: scripts/run-checks.sh
 
   shaders:
     name: Shader validation
