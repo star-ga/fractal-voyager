@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MIND_VERSION: v0.10.2
+  NAGA_VERSION: 30.0.1
+
+jobs:
+  mind:
+    name: MIND reference kernel
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install MLIR and Clang (LLVM 20)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mlir-20-tools clang-20
+          echo "/usr/lib/llvm-20/bin" >> "$GITHUB_PATH"
+
+      - name: Install mindc ${{ env.MIND_VERSION }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/mindc"
+          cd "$RUNNER_TEMP/mindc"
+          gh release download "$MIND_VERSION" -R star-ga/mind -p 'mindc-linux-x64.tar.gz*'
+          sha256sum -c mindc-linux-x64.tar.gz.sha256
+          tar xzf mindc-linux-x64.tar.gz
+          echo "$RUNNER_TEMP/mindc" >> "$GITHUB_PATH"
+
+      - name: Check (format, lint, types)
+        run: mindc check src/main.mind
+
+      - name: Build and run known-answer checks
+        run: mindc run
+
+  shaders:
+    name: Shader validation
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install glslang and naga
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslang-tools
+          cargo install naga-cli --version "$NAGA_VERSION" --locked
+
+      - name: Extract shaders from web/index.html
+        run: node scripts/extract-shaders.mjs build/shaders
+
+      - name: Validate WGSL (WebGPU)
+        run: |
+          naga build/shaders/fractal.wgsl
+          naga web/dist/fractal.wgsl
+
+      - name: Validate GLSL ES 3.00 (WebGL2)
+        run: |
+          glslangValidator build/shaders/fractal.vert
+          glslangValidator build/shaders/fractal.frag
