@@ -3,9 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link rel="apple-touch-icon" href="/favicon.svg">
-    <title>Fractal Voyager - MindLang GPU Demo</title>
+    <link rel="icon" href="favicon.ico">
+    <title>Fractal Voyager - MIND GPU Demo</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { background: #000; overflow: hidden; font-family: 'Inter', 'SF Pro Display', -apple-system, system-ui, sans-serif; }
@@ -614,8 +613,8 @@
                         <div class="browser-item">
                             <span class="browser-icon">🦊</span>
                             <div class="browser-info">
-                                <div class="browser-name">Firefox 121+ <span class="check">✓</span></div>
-                                <div class="browser-steps">WebGPU enabled by default on Windows/macOS.</div>
+                                <div class="browser-name">Firefox 141+ (Windows), 147+ (macOS) <span class="check">✓</span></div>
+                                <div class="browser-steps">WebGPU enabled by default on Windows, and on Apple silicon Macs from Firefox 147.</div>
                             </div>
                         </div>
                         <div class="browser-item">
@@ -623,9 +622,9 @@
                             <div class="browser-info">
                                 <div class="browser-name">Firefox (Linux) <span class="warning">flag required</span></div>
                                 <div class="browser-steps">
-                                    1. Open <code>about:config</code><br>
-                                    2. Set <code>dom.webgpu.enabled</code> → true<br>
-                                    3. Set <code>gfx.webgpu.force-enabled</code> → true<br>
+                                    1. Use Firefox Beta or Nightly<br>
+                                    2. Open <code>about:config</code><br>
+                                    3. Set <code>gfx.webgpu.ignore-blocklist</code> → true<br>
                                     4. Restart browser
                                 </div>
                             </div>
@@ -644,14 +643,14 @@
                         <div class="browser-item">
                             <span class="browser-icon">🧭</span>
                             <div class="browser-info">
-                                <div class="browser-name">Safari 18+ (macOS Sequoia) <span class="check">✓</span></div>
+                                <div class="browser-name">Safari 26+ (macOS Tahoe, iOS 26) <span class="check">✓</span></div>
                                 <div class="browser-steps">WebGPU enabled by default.</div>
                             </div>
                         </div>
                         <div class="browser-item">
                             <span class="browser-icon">🧭</span>
                             <div class="browser-info">
-                                <div class="browser-name">Safari 17 <span class="warning">flag required</span></div>
+                                <div class="browser-name">Safari 17–18 <span class="warning">flag required</span></div>
                                 <div class="browser-steps">
                                     1. Safari → Settings → Advanced<br>
                                     2. Check "Show Develop menu"<br>
@@ -731,7 +730,7 @@
                 return output;
             }
 
-            // ===== Cardioid/Bulb Skip: O(1) test saves ~30% of Mandelbrot iterations =====
+            // ===== Cardioid/Bulb Skip: O(1) test, no iteration for points in the main cardioid or period-2 bulb =====
             fn inCardioidOrBulb(cr: f32, ci: f32) -> bool {
                 // Main cardioid check: q(q + (x - 1/4)) < y²/4
                 let q = (cr - 0.25) * (cr - 0.25) + ci * ci;
@@ -879,6 +878,15 @@
                     zr2 = zr * zr; zi2 = zi * zi; iter = iter + 1.0;
                 }
 
+                // Remainder iterations (maxI % 4), so interior points reach maxI
+                let rem = maxI % 4;
+                for (var r: i32 = 0; r < 4; r = r + 1) {
+                    if (r >= rem) { break; }
+                    if (zr2 + zi2 > ESCAPE_R_SQ) { break; }
+                    let t5 = zr2 - zi2 + cr; zi = 2.0 * zr * zi + ci; zr = t5;
+                    zr2 = zr * zr; zi2 = zi * zi; iter = iter + 1.0;
+                }
+
                 return vec2<f32>(iter, sqrt(zr2 + zi2));
             }
 
@@ -914,6 +922,16 @@
                     zi = 2.0 * azr * azi + ci; iter = iter + 1.0;
                 }
 
+                // Remainder iterations (maxI % 4), so interior points reach maxI
+                let rem = maxI % 4;
+                for (var r: i32 = 0; r < 4; r = r + 1) {
+                    if (r >= rem) { break; }
+                    let azr5 = abs(zr); let azi5 = abs(zi);
+                    if (azr5 * azr5 + azi5 * azi5 > ESCAPE_R_SQ) { break; }
+                    zr = azr5 * azr5 - azi5 * azi5 + cr;
+                    zi = 2.0 * azr5 * azi5 + ci; iter = iter + 1.0;
+                }
+
                 return vec2<f32>(iter, sqrt(zr * zr + zi * zi));
             }
 
@@ -944,6 +962,15 @@
 
                     if (zr2 + zi2 > ESCAPE_R_SQ) { break; }
                     let t4 = zr2 - zi2 + cr; zi = -2.0 * zr * zi + ci; zr = t4;
+                    zr2 = zr * zr; zi2 = zi * zi; iter = iter + 1.0;
+                }
+
+                // Remainder iterations (maxI % 4), so interior points reach maxI
+                let rem = maxI % 4;
+                for (var r: i32 = 0; r < 4; r = r + 1) {
+                    if (r >= rem) { break; }
+                    if (zr2 + zi2 > ESCAPE_R_SQ) { break; }
+                    let t5 = zr2 - zi2 + cr; zi = -2.0 * zr * zi + ci; zr = t5;
                     zr2 = zr * zr; zi2 = zi * zi; iter = iter + 1.0;
                 }
 
@@ -1012,7 +1039,7 @@
             const float ESCAPE_R_SQ = 65536.0;
             const float LOG_ESCAPE_R = 5.545177444479562;  // log(256)
 
-            // ===== Cardioid/Bulb Skip: O(1) test saves ~30% of Mandelbrot iterations =====
+            // ===== Cardioid/Bulb Skip: O(1) test, no iteration for points in the main cardioid or period-2 bulb =====
             bool inCardioidOrBulb(float cr, float ci) {
                 float q = (cr - 0.25) * (cr - 0.25) + ci * ci;
                 bool inCardioid = q * (q + (cr - 0.25)) < 0.25 * ci * ci;
@@ -1111,6 +1138,14 @@
                     zi = 2.0 * zr * zi + ci; zr = zr2 - zi2 + cr;
                     zr2 = zr * zr; zi2 = zi * zi; iter += 1.0;
                 }
+                // Remainder iterations (maxI % 4), so interior points reach maxI
+                int rem = maxI % 4;
+                for (int r = 0; r < 4; r++) {
+                    if (r >= rem) break;
+                    if (zr2 + zi2 > ESCAPE_R_SQ) break;
+                    zi = 2.0 * zr * zi + ci; zr = zr2 - zi2 + cr;
+                    zr2 = zr * zr; zi2 = zi * zi; iter += 1.0;
+                }
                 return vec2(iter, sqrt(zr2 + zi2));
             }
 
@@ -1142,6 +1177,15 @@
                     zr = azr * azr - azi * azi + cr;
                     zi = 2.0 * azr * azi + ci; iter += 1.0;
                 }
+                // Remainder iterations (maxI % 4), so interior points reach maxI
+                int rem = maxI % 4;
+                for (int r = 0; r < 4; r++) {
+                    if (r >= rem) break;
+                    float azr5 = abs(zr), azi5 = abs(zi);
+                    if (azr5 * azr5 + azi5 * azi5 > ESCAPE_R_SQ) break;
+                    zr = azr5 * azr5 - azi5 * azi5 + cr;
+                    zi = 2.0 * azr5 * azi5 + ci; iter += 1.0;
+                }
                 return vec2(iter, sqrt(zr * zr + zi * zi));
             }
 
@@ -1167,6 +1211,14 @@
 
                     if (zr2 + zi2 > ESCAPE_R_SQ) break;
                     t = zr2 - zi2 + cr; zi = -2.0 * zr * zi + ci; zr = t;
+                    zr2 = zr * zr; zi2 = zi * zi; iter += 1.0;
+                }
+                // Remainder iterations (maxI % 4), so interior points reach maxI
+                int rem = maxI % 4;
+                for (int r = 0; r < 4; r++) {
+                    if (r >= rem) break;
+                    if (zr2 + zi2 > ESCAPE_R_SQ) break;
+                    float t5 = zr2 - zi2 + cr; zi = -2.0 * zr * zi + ci; zr = t5;
                     zr2 = zr * zr; zi2 = zi * zi; iter += 1.0;
                 }
                 return vec2(iter, sqrt(zr2 + zi2));
@@ -1250,8 +1302,9 @@
                 const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
                 if (!adapter) return false;
 
-                const adapterInfo = await adapter.requestAdapterInfo?.() || {};
-                gpuName = adapterInfo.description || adapterInfo.device || 'WebGPU Device';
+                // GPUAdapter.info replaces the removed requestAdapterInfo()
+                const adapterInfo = adapter.info || (await adapter.requestAdapterInfo?.()) || {};
+                gpuName = adapterInfo.description || [adapterInfo.vendor, adapterInfo.architecture].filter(Boolean).join(' ') || adapterInfo.device || 'WebGPU Device';
 
                 gpuDevice = await adapter.requestDevice();
                 gpuContext = canvas.getContext('webgpu');
@@ -1730,7 +1783,7 @@
             const webgpuBtn = document.getElementById('webgpuBtn');
             const webgl2Btn = document.getElementById('webgl2Btn');
 
-            // Detect browser - Firefox WebGPU is 20x slower than WebGL2
+            // Detect browser - WebGPU is the default on Chromium only; other browsers start on WebGL2
             const isFirefox = navigator.userAgent.includes('Firefox');
             const isChrome = navigator.userAgent.includes('Chrome') && !navigator.userAgent.includes('Edge');
 
