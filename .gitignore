@@ -1,6 +1,8 @@
-# MindLang build artifacts
+# MIND build artifacts
 /dist/
 /build/
+/target/
+.mind-build.lock
 *.wgsl.gen
 *.spv
 

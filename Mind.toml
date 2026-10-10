@@ -1,0 +1,16 @@
+# Fractal Voyager - MIND project manifest
+#
+# `mindc run` builds src/main.mind for the CPU and runs its known-answer
+# checks; the exit code is the number of failed checks (0 = pass).
+
+[package]
+name = "fractal-voyager"
+version = "0.2.0"
+authors = ["STARGA Inc. <noreply@star.ga>"]
+license = "MIT"
+description = "Reference kernel and known-answer checks for the Fractal Voyager WebGPU/WebGL2 fractal explorer"
+repository = "https://github.com/star-ga/fractal-voyager"
+
+[build]
+target = "cpu"
+entry = "src/main.mind"

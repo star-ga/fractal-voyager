@@ -1,412 +1,467 @@
-// main.mind - Fractal Voyager Entry Point
+// main.mind - Fractal Voyager reference kernel
 //
-// GPU-accelerated fractal visualization using MIND with WebGPU runtime.
-// Renders Mandelbrot, Julia, Burning Ship, and Tricorn fractals with
-// audio-reactive coloring and smooth interactive navigation.
+// A scalar, per-pixel reference of the kernel the browser demo runs on the GPU
+// (the WGSL and GLSL shaders embedded in web/index.html). It covers:
 //
-// All computation is expressed as tensor operations, enabling automatic
-// parallelization on GPU via MIND's MLIR->WGSL compilation pipeline.
+//   - the view mapping from a pixel to a point c on the complex plane
+//   - escape-time iteration for Mandelbrot, Julia, Burning Ship and Tricorn
+//   - the O(1) main-cardioid / period-2-bulb test used to skip interior points
+//   - the colour palettes that need no transcendental functions
+//
+// The program is its own test: `mindc run` executes a set of known-answer
+// checks and the process exit code is the number of failed checks (0 = pass).
+// The expected values were produced by an independent IEEE-754 double
+// precision implementation of the same definitions.
+//
+// Precision note: this reference computes in f64; the shaders compute in f32.
+// Escape counts therefore agree away from the set boundary and may differ for
+// boundary pixels. The shaders also stop early when an orbit repeats exactly
+// (periodicity check); that shortcut only fires for points that never escape,
+// so it does not change any escape count and is not reproduced here.
+//
+// deferred: single file because mindc 0.10.2 cannot carry an f64 across a
+// module boundary (an imported f64 signature miscompiles) - upgrade path: split
+// into complex/fractal/color modules once a released mindc fixes that.
+// deferred: the smooth (fractional) iteration count and the Neon, Psychedelic,
+// Plasma and Galaxy palettes need log/sin, which live in std.detmath and hit
+// the same cross-module limit - upgrade path: `import std.detmath;` then port
+// them from the shader's getColor().
 //
 // Author: STARGA Inc. <noreply@star.ga>
 // License: MIT
-// Specification reference: spec/v1.0/language.md
 
-import tensor::zeros;
-import tensor::ones;
-import math::pow;
-import math::max;
-import math::min;
-import math::log;
-import io::print;
+// ---------------------------------------------------------------------------
+// Constants shared with the shaders
+// ---------------------------------------------------------------------------
 
-// Import fractal computation modules
-import fractal::compute_fractal_grid;
-import fractal::make_coordinate_grid;
-import fractal::adaptive_iterations;
-import color::colorize_iterations;
-import color::get_palette_color;
-
-// =============================================================================
-// Configuration Constants
-// =============================================================================
-
-fn default_width() -> i32 { 1280 }
-fn default_height() -> i32 { 720 }
-fn base_iterations() -> i32 { 100 }
-fn max_iterations() -> i32 { 2000 }
-fn zoom_smooth_factor() -> f32 { 0.1 }
-fn pan_smooth_factor() -> f32 { 0.15 }
-
-// =============================================================================
-// Application State (as Tensors)
-// =============================================================================
-
-// View state packed as tensor: [center_x, center_y, target_center_x, target_center_y, zoom, target_zoom]
-fn view_state_default() -> Tensor<f32, [6]> {
-    [-0.5, 0.0, -0.5, 0.0, 1.0, 1.0]
+// Escape radius 256, squared. A large radius gives smoother colour gradients.
+fn escape_radius_sq() -> f64 {
+    return 65536.0;
 }
 
-// Audio state: [intensity, low, mid, high]
-fn audio_state_default() -> Tensor<f32, [4]> {
-    zeros([4])
+// Default Julia constant used by the demo.
+fn julia_re() -> f64 {
+    return 0.0 - 0.7;
 }
 
-// Render config: [width, height, fractal_type, color_scheme, time, audio_enabled]
-fn render_config_default() -> Tensor<f32, [6]> {
-    [1280.0, 720.0, 0.0, 0.0, 0.0, 0.0]
+fn julia_im() -> f64 {
+    return 0.27015;
 }
 
-// Julia constant: [real, imag]
-fn julia_c_default() -> Tensor<f32, [2]> {
-    [-0.7, 0.27015]  // Classic Julia set constant
+// Fractal kinds, matching `fractalType` in the shaders.
+fn kind_mandelbrot() -> i64 {
+    return 0;
 }
 
-// =============================================================================
-// State Accessors
-// =============================================================================
-
-fn get_center(view: Tensor<f32, [6]>) -> Tensor<f32, [2]> {
-    [view[0], view[1]]
+fn kind_julia() -> i64 {
+    return 1;
 }
 
-fn get_target_center(view: Tensor<f32, [6]>) -> Tensor<f32, [2]> {
-    [view[2], view[3]]
+fn kind_burning_ship() -> i64 {
+    return 2;
 }
 
-fn get_zoom(view: Tensor<f32, [6]>) -> f32 {
-    view[4]
+fn kind_tricorn() -> i64 {
+    return 3;
 }
 
-fn get_target_zoom(view: Tensor<f32, [6]>) -> f32 {
-    view[5]
-}
+// ---------------------------------------------------------------------------
+// Small scalar helpers
+// ---------------------------------------------------------------------------
 
-// =============================================================================
-// View Updates
-// =============================================================================
-
-// Smooth linear interpolation
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
-}
-
-// Update view with smooth interpolation toward targets
-fn view_update(view: Tensor<f32, [6]>, dt: f32) -> Tensor<f32, [6]> {
-    let smooth_pan = 1.0 - pow(pan_smooth_factor(), dt * 60.0);
-    let smooth_zoom = 1.0 - pow(zoom_smooth_factor(), dt * 60.0);
-
-    let center_x = lerp(view[0], view[2], smooth_pan);
-    let center_y = lerp(view[1], view[3], smooth_pan);
-    let zoom = lerp(view[4], view[5], smooth_zoom);
-
-    // Keep targets unchanged
-    [center_x, center_y, view[2], view[3], zoom, view[5]]
-}
-
-// Zoom at specific screen point (preserves point under cursor)
-fn view_zoom_at(
-    view: Tensor<f32, [6]>,
-    screen_x: f32,
-    screen_y: f32,
-    factor: f32,
-    width: f32,
-    height: f32
-) -> Tensor<f32, [6]> {
-    let center = get_center(view);
-    let zoom = get_zoom(view);
-    let target_zoom = get_target_zoom(view);
-
-    // Calculate new zoom
-    let new_zoom = max(0.5, target_zoom * factor);
-
-    // Map screen point to complex plane at current zoom
-    let aspect = width / height;
-    let scale_old = 3.5 / zoom;
-    let u = screen_x / width - 0.5;
-    let v = screen_y / height - 0.5;
-    let mouse_real = u * scale_old * aspect + center[0];
-    let mouse_imag = v * scale_old + center[1];
-
-    // Map same screen point at new zoom
-    let scale_new = 3.5 / new_zoom;
-    let new_center_real = u * scale_new * aspect + center[0];
-    let new_center_imag = v * scale_new + center[1];
-
-    // Adjust target center to keep mouse position fixed
-    let target_center = get_target_center(view);
-    let adj_real = target_center[0] + (mouse_real - new_center_real);
-    let adj_imag = target_center[1] + (mouse_imag - new_center_imag);
-
-    [view[0], view[1], adj_real, adj_imag, view[4], new_zoom]
-}
-
-// Pan view by screen pixel delta
-fn view_pan(
-    view: Tensor<f32, [6]>,
-    dx: f32,
-    dy: f32,
-    width: f32,
-    height: f32
-) -> Tensor<f32, [6]> {
-    let zoom = get_zoom(view);
-    let target_center = get_target_center(view);
-    let aspect = width / height;
-    let scale = 3.5 / zoom;
-
-    // Convert screen delta to complex plane delta
-    let c_dx = -dx / width * scale * aspect;
-    let c_dy = -dy / height * scale;
-
-    let new_target_x = target_center[0] + c_dx;
-    let new_target_y = target_center[1] + c_dy;
-
-    [view[0], view[1], new_target_x, new_target_y, view[4], view[5]]
-}
-
-// Reset view to default
-fn view_reset() -> Tensor<f32, [6]> {
-    view_state_default()
-}
-
-// =============================================================================
-// Rendering Pipeline
-// =============================================================================
-
-// Main render function: compute fractal and colorize
-// Returns: Tensor<f32, [H, W, 4]> - RGBA image
-fn render_frame(
-    view: Tensor<f32, [6]>,
-    config: Tensor<f32, [6]>,
-    julia_c: Tensor<f32, [2]>,
-    audio: Tensor<f32, [4]>
-) -> Tensor<f32, [H, W, 4]> {
-    let width = cast(config[0], i32);
-    let height = cast(config[1], i32);
-    let fractal_type = cast(config[2], i32);
-    let color_scheme = cast(config[3], i32);
-    let time = config[4];
-    let audio_enabled = config[5] > 0.5;
-
-    let center = get_center(view);
-    let zoom = get_zoom(view);
-
-    // Calculate adaptive iterations based on zoom
-    let max_iter = adaptive_iterations(zoom, base_iterations(), max_iterations());
-
-    // Generate coordinate grid for all pixels
-    let c_grid = make_coordinate_grid(width, height, center, zoom);
-
-    // Compute fractal iterations for all pixels (GPU-parallel)
-    let iterations = compute_fractal_grid(fractal_type, c_grid, julia_c, max_iter);
-
-    // Get audio intensity for reactive colors
-    let audio_intensity = select(audio_enabled, audio[0], 0.0);
-
-    // Apply color palette to iteration counts
-    let rgb = colorize_iterations(
-        iterations,
-        cast(max_iter, f32),
-        color_scheme,
-        time,
-        audio_intensity
-    );
-
-    // Add alpha channel (fully opaque)
-    let alpha = ones([H, W]);
-    stack([rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2], alpha], axis=2)
-}
-
-// =============================================================================
-// GPU Kernel Entry Point
-// =============================================================================
-
-// Compute kernel for parallel pixel rendering
-// Each thread computes one pixel
-// Maps to WebGPU compute shader via MIND runtime
-#[kernel(workgroup = [16, 16, 1])]
-fn render_kernel(
-    // Input uniforms
-    view: Tensor<f32, [6]>,
-    config: Tensor<f32, [6]>,
-    julia_c: Tensor<f32, [2]>,
-    audio: Tensor<f32, [4]>,
-    // Output texture
-    output: Tensor<f32, [H, W, 4]>
-) {
-    // Get global thread ID
-    let gid = global_invocation_id();
-    let x = gid[0];
-    let y = gid[1];
-
-    let width = cast(config[0], i32);
-    let height = cast(config[1], i32);
-
-    // Bounds check
-    if x >= width || y >= height {
-        return;
+fn absf(x: f64) -> f64 {
+    if x < 0.0 {
+        return 0.0 - x;
     }
+    return x;
+}
 
-    let fractal_type = cast(config[2], i32);
-    let color_scheme = cast(config[3], i32);
-    let time = config[4];
-    let audio_enabled = config[5] > 0.5;
+fn minf(a: f64, b: f64) -> f64 {
+    if a < b {
+        return a;
+    }
+    return b;
+}
 
-    let center = get_center(view);
-    let zoom = get_zoom(view);
+fn maxf(a: f64, b: f64) -> f64 {
+    if a > b {
+        return a;
+    }
+    return b;
+}
 
-    // Adaptive iterations
-    let max_iter = adaptive_iterations(zoom, base_iterations(), max_iterations());
+// Largest integer value not greater than x, as f64.
+fn floorf(x: f64) -> f64 {
+    let mut i: i64 = x as i64;
+    if (i as f64) > x {
+        i = i - 1;
+    }
+    return i as f64;
+}
 
-    // Map this pixel to complex plane
-    let aspect = cast(width, f32) / cast(height, f32);
-    let scale = 3.5 / zoom;
-    let u = cast(x, f32) / cast(width, f32) - 0.5;
-    let v = cast(y, f32) / cast(height, f32) - 0.5;
-    let c = [u * scale * aspect + center[0], v * scale + center[1]];
+fn fractf(x: f64) -> f64 {
+    return x - floorf(x);
+}
 
-    // Compute fractal for this pixel
-    let z_real = 0.0;
-    let z_imag = 0.0;
-    let iter_count = 0.0;
-    let escaped = false;
+// Square root by Newton's method, for x >= 0. Used only for 8-bit colour
+// output, where it agrees with a correctly rounded sqrt.
+fn sqrtf(x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let mut y: f64 = maxf(x, 1.0);
+    let mut i: i64 = 0;
+    while i < 64 {
+        y = 0.5 * (y + x / y);
+        i = i + 1;
+    }
+    return y;
+}
 
-    // Mandelbrot iteration (unrolled for GPU efficiency)
-    for i in 0..max_iter {
-        let z_sq = z_real * z_real + z_imag * z_imag;
-        if z_sq > 4.0 {
-            escaped = true;
-            break;
+// ---------------------------------------------------------------------------
+// View mapping
+// ---------------------------------------------------------------------------
+//
+// The visible width of the complex plane is 3.5 / zoom along the vertical
+// axis, scaled by the aspect ratio horizontally. Pixel (px, py) samples its
+// centre; py counts from the bottom edge, as in the shaders' uv coordinates.
+
+fn pixel_re(px: i64, width: i64, height: i64, center_re: f64, zoom: f64) -> f64 {
+    let w: f64 = width as f64;
+    let aspect: f64 = w / (height as f64);
+    let scale: f64 = 3.5 / zoom;
+    let u: f64 = ((px as f64) + 0.5) / w - 0.5;
+    return center_re + u * scale * aspect;
+}
+
+fn pixel_im(py: i64, height: i64, center_im: f64, zoom: f64) -> f64 {
+    let scale: f64 = 3.5 / zoom;
+    let v: f64 = ((py as f64) + 0.5) / (height as f64) - 0.5;
+    return center_im + v * scale;
+}
+
+// ---------------------------------------------------------------------------
+// Escape-time iteration
+// ---------------------------------------------------------------------------
+//
+// Each function returns the number of iterations before |z|^2 exceeds the
+// escape radius, or max_iter when the orbit never escapes. The update order
+// matches the shaders term for term.
+
+// 1 when c lies in the main cardioid or the period-2 bulb, both of which are
+// inside the Mandelbrot set; 0 otherwise.
+fn in_cardioid_or_bulb(cr: f64, ci: f64) -> i64 {
+    let xr: f64 = cr - 0.25;
+    let q: f64 = xr * xr + ci * ci;
+    if q * (q + xr) < 0.25 * ci * ci {
+        return 1;
+    }
+    let br: f64 = cr + 1.0;
+    if br * br + ci * ci < 0.0625 {
+        return 1;
+    }
+    return 0;
+}
+
+// Mandelbrot: z <- z^2 + c, starting from z = 0.
+pub fn mandelbrot_escape(cr: f64, ci: f64, max_iter: i64) -> i64 {
+    if in_cardioid_or_bulb(cr, ci) == 1 {
+        return max_iter;
+    }
+    let mut zr: f64 = 0.0;
+    let mut zi: f64 = 0.0;
+    let mut zr2: f64 = 0.0;
+    let mut zi2: f64 = 0.0;
+    let mut it: i64 = 0;
+    while it < max_iter {
+        if zr2 + zi2 > escape_radius_sq() {
+            return it;
         }
-
-        let temp = z_real * z_real - z_imag * z_imag + c[0];
-        z_imag = 2.0 * z_real * z_imag + c[1];
-        z_real = temp;
-        iter_count = iter_count + 1.0;
+        zi = 2.0 * zr * zi + ci;
+        zr = zr2 - zi2 + cr;
+        zr2 = zr * zr;
+        zi2 = zi * zi;
+        it = it + 1;
     }
-
-    // Smooth iteration count
-    let smooth_iter = select(escaped,
-        iter_count + 1.0 - log(log(sqrt(z_real * z_real + z_imag * z_imag))) / log(2.0),
-        cast(max_iter, f32));
-
-    // Get color
-    let audio_intensity = select(audio_enabled, audio[0], 0.0);
-    let t = smooth_iter / cast(max_iter, f32);
-    let color = select(smooth_iter >= cast(max_iter, f32),
-        [0.0, 0.0, 0.0],
-        get_palette_color(color_scheme, t, smooth_iter, time, audio_intensity));
-
-    // Write to output
-    output[y, x, 0] = color[0];
-    output[y, x, 1] = color[1];
-    output[y, x, 2] = color[2];
-    output[y, x, 3] = 1.0;
+    return it;
 }
 
-// =============================================================================
-// Application Main
-// =============================================================================
-
-// Main entry point
-fn main() !io {
-    print("Fractal Voyager - MIND WebGPU Visualization");
-    print("Author: STARGA Inc.");
-    print("");
-
-    // Initialize state
-    let view = view_state_default();
-    let config = render_config_default();
-    let julia_c = julia_c_default();
-    let audio = audio_state_default();
-
-    // Runtime handles event loop and GPU dispatch
-    // This is lowered to WebGPU compute shader invocations
-    runtime_main(view, config, julia_c, audio, render_kernel);
+// Julia: z <- z^2 + k for a fixed constant k, starting from z = the pixel.
+pub fn julia_escape(z0r: f64, z0i: f64, kr: f64, ki: f64, max_iter: i64) -> i64 {
+    let mut zr: f64 = z0r;
+    let mut zi: f64 = z0i;
+    let mut zr2: f64 = zr * zr;
+    let mut zi2: f64 = zi * zi;
+    let mut it: i64 = 0;
+    while it < max_iter {
+        if zr2 + zi2 > escape_radius_sq() {
+            return it;
+        }
+        let next_r: f64 = zr2 - zi2 + kr;
+        zi = 2.0 * zr * zi + ki;
+        zr = next_r;
+        zr2 = zr * zr;
+        zi2 = zi * zi;
+        it = it + 1;
+    }
+    return it;
 }
 
-// =============================================================================
-// Event Handlers (Called by Runtime)
-// =============================================================================
-
-// Handle frame update
-fn on_update(
-    view: Tensor<f32, [6]>,
-    config: Tensor<f32, [6]>,
-    dt: f32
-) -> (Tensor<f32, [6]>, Tensor<f32, [6]>) {
-    // Update time
-    let new_config = [config[0], config[1], config[2], config[3], config[4] + dt, config[5]];
-
-    // Smooth view animation
-    let new_view = view_update(view, dt);
-
-    (new_view, new_config)
+// Burning Ship: z <- (|Re z| + i|Im z|)^2 + c, starting from z = 0.
+pub fn burning_ship_escape(cr: f64, ci: f64, max_iter: i64) -> i64 {
+    let mut zr: f64 = 0.0;
+    let mut zi: f64 = 0.0;
+    let mut it: i64 = 0;
+    while it < max_iter {
+        let azr: f64 = absf(zr);
+        let azi: f64 = absf(zi);
+        if azr * azr + azi * azi > escape_radius_sq() {
+            return it;
+        }
+        zr = azr * azr - azi * azi + cr;
+        zi = 2.0 * azr * azi + ci;
+        it = it + 1;
+    }
+    return it;
 }
 
-// Handle mouse wheel zoom
-fn on_mouse_wheel(
-    view: Tensor<f32, [6]>,
-    config: Tensor<f32, [6]>,
-    x: f32,
-    y: f32,
-    delta: f32
-) -> Tensor<f32, [6]> {
-    let factor = select(delta > 0.0, 1.1, 0.9);
-    view_zoom_at(view, x, y, factor, config[0], config[1])
+// Tricorn (Mandelbar): z <- conj(z)^2 + c, starting from z = 0.
+pub fn tricorn_escape(cr: f64, ci: f64, max_iter: i64) -> i64 {
+    let mut zr: f64 = 0.0;
+    let mut zi: f64 = 0.0;
+    let mut zr2: f64 = 0.0;
+    let mut zi2: f64 = 0.0;
+    let mut it: i64 = 0;
+    while it < max_iter {
+        if zr2 + zi2 > escape_radius_sq() {
+            return it;
+        }
+        let next_r: f64 = zr2 - zi2 + cr;
+        zi = -2.0 * zr * zi + ci;
+        zr = next_r;
+        zr2 = zr * zr;
+        zi2 = zi * zi;
+        it = it + 1;
+    }
+    return it;
 }
 
-// Handle mouse drag pan
-fn on_mouse_drag(
-    view: Tensor<f32, [6]>,
-    config: Tensor<f32, [6]>,
-    dx: f32,
-    dy: f32
-) -> Tensor<f32, [6]> {
-    view_pan(view, dx, dy, config[0], config[1])
+// Dispatch on the fractal kind, as the fragment shader does.
+pub fn escape_count(kind: i64, cr: f64, ci: f64, max_iter: i64) -> i64 {
+    if kind == kind_mandelbrot() {
+        return mandelbrot_escape(cr, ci, max_iter);
+    }
+    if kind == kind_julia() {
+        return julia_escape(cr, ci, julia_re(), julia_im(), max_iter);
+    }
+    if kind == kind_burning_ship() {
+        return burning_ship_escape(cr, ci, max_iter);
+    }
+    return tricorn_escape(cr, ci, max_iter);
 }
 
-// Handle key press
-fn on_key_press(
-    config: Tensor<f32, [6]>,
-    key: i32
-) -> Tensor<f32, [6]> {
-    // Key codes: 1-4 for fractal types, C for color, A for audio, R for reset
-    let fractal_type = config[2];
-    let color_scheme = config[3];
-    let audio_enabled = config[5];
+// ---------------------------------------------------------------------------
+// Frame statistics
+// ---------------------------------------------------------------------------
+//
+// Renders a width x height frame and folds the escape counts into three
+// numbers so a whole frame can be checked at once.
 
-    let new_fractal = select(key == 49, 0.0,  // '1' -> Mandelbrot
-                     select(key == 50, 1.0,   // '2' -> Julia
-                     select(key == 51, 2.0,   // '3' -> Burning Ship
-                     select(key == 52, 3.0,   // '4' -> Tricorn
-                     fractal_type))));
-
-    let new_color = select(key == 67,  // 'C' -> cycle colors
-                     (color_scheme + 1.0) % 8.0,
-                     color_scheme);
-
-    let new_audio = select(key == 65,  // 'A' -> toggle audio
-                    1.0 - audio_enabled,
-                    audio_enabled);
-
-    [config[0], config[1], new_fractal, new_color, config[4], new_audio]
+pub fn frame_total(kind: i64, width: i64, height: i64, center_re: f64, center_im: f64, zoom: f64, max_iter: i64) -> i64 {
+    let mut total: i64 = 0;
+    let mut py: i64 = 0;
+    while py < height {
+        let ci: f64 = pixel_im(py, height, center_im, zoom);
+        let mut px: i64 = 0;
+        while px < width {
+            let cr: f64 = pixel_re(px, width, height, center_re, zoom);
+            total = total + escape_count(kind, cr, ci, max_iter);
+            px = px + 1;
+        }
+        py = py + 1;
+    }
+    return total;
 }
 
-// Handle audio data from microphone
-fn on_audio_data(
-    intensity: f32,
-    low: f32,
-    mid: f32,
-    high: f32
-) -> Tensor<f32, [4]> {
-    [intensity, low, mid, high]
+// Position-weighted checksum: sum of count * (row-major index + 1), mod 1e9+7.
+pub fn frame_weighted(kind: i64, width: i64, height: i64, center_re: f64, center_im: f64, zoom: f64, max_iter: i64) -> i64 {
+    let mut acc: i64 = 0;
+    let mut idx: i64 = 0;
+    let mut py: i64 = 0;
+    while py < height {
+        let ci: f64 = pixel_im(py, height, center_im, zoom);
+        let mut px: i64 = 0;
+        while px < width {
+            let cr: f64 = pixel_re(px, width, height, center_re, zoom);
+            idx = idx + 1;
+            acc = (acc + escape_count(kind, cr, ci, max_iter) * idx) % 1000000007;
+            px = px + 1;
+        }
+        py = py + 1;
+    }
+    return acc;
 }
 
-// Handle window resize
-fn on_resize(
-    config: Tensor<f32, [6]>,
-    width: i32,
-    height: i32
-) -> Tensor<f32, [6]> {
-    [cast(width, f32), cast(height, f32), config[2], config[3], config[4], config[5]]
+// Number of pixels that never escaped (drawn black by the demo).
+pub fn frame_inside(kind: i64, width: i64, height: i64, center_re: f64, center_im: f64, zoom: f64, max_iter: i64) -> i64 {
+    let mut inside: i64 = 0;
+    let mut py: i64 = 0;
+    while py < height {
+        let ci: f64 = pixel_im(py, height, center_im, zoom);
+        let mut px: i64 = 0;
+        while px < width {
+            let cr: f64 = pixel_re(px, width, height, center_re, zoom);
+            if escape_count(kind, cr, ci, max_iter) >= max_iter {
+                inside = inside + 1;
+            }
+            px = px + 1;
+        }
+        py = py + 1;
+    }
+    return inside;
+}
+
+// ---------------------------------------------------------------------------
+// Colour
+// ---------------------------------------------------------------------------
+//
+// Colours are returned packed as 0xRRGGBB with each channel clamped to [0, 1]
+// and rounded to 8 bits, which is what the canvas stores.
+
+fn channel8(x: f64) -> i64 {
+    let c: f64 = minf(1.0, maxf(0.0, x));
+    return (c * 255.0 + 0.5) as i64;
+}
+
+fn pack_rgb(r: f64, g: f64, b: f64) -> i64 {
+    return channel8(r) * 65536 + channel8(g) * 256 + channel8(b);
+}
+
+// HSV to RGB, identical to the shaders' hsv2rgb().
+pub fn hsv_to_rgb(h: f64, s: f64, v: f64) -> i64 {
+    let c: f64 = v * s;
+    let x: f64 = c * (1.0 - absf(fractf(h * 3.0) * 2.0 - 1.0));
+    let m: f64 = v - c;
+    let hi: i64 = (floorf(h * 6.0) as i64) % 6;
+    if hi == 0 {
+        return pack_rgb(c + m, x + m, m);
+    }
+    if hi == 1 {
+        return pack_rgb(x + m, c + m, m);
+    }
+    if hi == 2 {
+        return pack_rgb(m, c + m, x + m);
+    }
+    if hi == 3 {
+        return pack_rgb(m, x + m, c + m);
+    }
+    if hi == 4 {
+        return pack_rgb(x + m, m, c + m);
+    }
+    return pack_rgb(c + m, m, x + m);
+}
+
+// Palettes 0 (Electric), 1 (Fire), 2 (Ocean) and 4 (Grayscale).
+// t is the normalised iteration count in [0, 1], time is in seconds and audio
+// is the audio intensity in [0, 1]. Returns -1 for palettes not ported yet.
+pub fn palette_rgb(scheme: i64, t: f64, time: f64, audio: f64) -> i64 {
+    if scheme == 0 {
+        return hsv_to_rgb(fractf(t * 5.0 + time * 0.1 + audio * 2.0), 0.8 + audio * 0.2, 0.9);
+    }
+    if scheme == 1 {
+        let k: f64 = 1.0 + audio;
+        let r: f64 = minf(1.0, t * 3.0) * k;
+        let g: f64 = maxf(0.0, (t - 0.33) * 1.8) * k;
+        let b: f64 = maxf(0.0, (t - 0.66) * 0.6) * k;
+        return pack_rgb(r, g, b);
+    }
+    if scheme == 2 {
+        return pack_rgb(t * 0.3, t * 0.6 + audio * 0.3, 0.4 + t * 0.6);
+    }
+    if scheme == 4 {
+        let v: f64 = sqrtf(t);
+        return pack_rgb(v, v, v);
+    }
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
+// Known-answer checks
+// ---------------------------------------------------------------------------
+
+// 0 when got == want, 1 otherwise (printing the mismatch).
+fn check(got: i64, want: i64) -> i64 {
+    if got == want {
+        return 0;
+    }
+    print(got);
+    print(want);
+    return 1;
+}
+
+fn check_points() -> i64 {
+    let mut fails: i64 = 0;
+    // The cardioid / bulb test itself (it only skips work, so the escape
+    // counts below cannot detect a broken test on their own).
+    fails = fails + check(in_cardioid_or_bulb(0.0, 0.0), 1);
+    fails = fails + check(in_cardioid_or_bulb(0.0 - 1.0, 0.0), 1);
+    fails = fails + check(in_cardioid_or_bulb(0.0 - 0.1, 0.6), 1);
+    fails = fails + check(in_cardioid_or_bulb(0.3, 0.5), 0);
+    fails = fails + check(in_cardioid_or_bulb(0.0 - 1.3, 0.0), 0);
+    // Interior points answered by the cardioid / bulb test.
+    fails = fails + check(mandelbrot_escape(0.0, 0.0, 100), 100);
+    fails = fails + check(mandelbrot_escape(0.0 - 1.0, 0.0, 100), 100);
+    // Points that escape after a known number of iterations.
+    fails = fails + check(mandelbrot_escape(1.0, 0.0, 100), 5);
+    fails = fails + check(mandelbrot_escape(0.0 - 0.75, 0.1, 100), 36);
+    fails = fails + check(mandelbrot_escape(0.3, 0.5, 100), 100);
+    fails = fails + check(julia_escape(0.0, 0.0, julia_re(), julia_im(), 100), 98);
+    fails = fails + check(burning_ship_escape(0.0 - 1.75, 0.0 - 0.03, 100), 26);
+    fails = fails + check(tricorn_escape(0.5, 0.5, 100), 10);
+    return fails;
+}
+
+// One frame of 48 x 27 pixels at the demo's reset view (centre -0.5 + 0i).
+fn check_frame(kind: i64, zoom: f64, max_iter: i64, total: i64, weighted: i64, inside: i64) -> i64 {
+    let mut fails: i64 = 0;
+    fails = fails + check(frame_total(kind, 48, 27, 0.0 - 0.5, 0.0, zoom, max_iter), total);
+    fails = fails + check(frame_weighted(kind, 48, 27, 0.0 - 0.5, 0.0, zoom, max_iter), weighted);
+    fails = fails + check(frame_inside(kind, 48, 27, 0.0 - 0.5, 0.0, zoom, max_iter), inside);
+    return fails;
+}
+
+fn check_frames() -> i64 {
+    let mut fails: i64 = 0;
+    // Zoom 1 uses the demo's base budget of 100 iterations.
+    fails = fails + check_frame(kind_mandelbrot(), 1.0, 100, 16104, 10452545, 96);
+    fails = fails + check_frame(kind_julia(), 1.0, 100, 14863, 9691159, 82);
+    fails = fails + check_frame(kind_burning_ship(), 1.0, 100, 17894, 9777691, 112);
+    fails = fails + check_frame(kind_tricorn(), 1.0, 100, 11808, 7677319, 52);
+    // Zoom 2 gives floor(100 + log2(2) * 30) = 130 iterations, which is not a
+    // multiple of 4, so it also covers the shaders' remainder iterations.
+    fails = fails + check_frame(kind_mandelbrot(), 2.0, 130, 57694, 37536702, 371);
+    fails = fails + check_frame(kind_julia(), 2.0, 130, 51325, 33989541, 272);
+    fails = fails + check_frame(kind_burning_ship(), 2.0, 130, 57477, 26441921, 379);
+    fails = fails + check_frame(kind_tricorn(), 2.0, 130, 31242, 20388638, 167);
+    return fails;
+}
+
+fn check_palettes() -> i64 {
+    let mut fails: i64 = 0;
+    fails = fails + check(palette_rgb(0, 0.37, 2.5, 0.25), 2257126);
+    fails = fails + check(palette_rgb(0, 0.81, 0.0, 0.0), 15099182);
+    fails = fails + check(palette_rgb(1, 0.37, 2.5, 0.25), 16717568);
+    fails = fails + check(palette_rgb(1, 0.81, 0.0, 0.0), 16768023);
+    fails = fails + check(palette_rgb(2, 0.37, 2.5, 0.25), 1854623);
+    fails = fails + check(palette_rgb(2, 0.81, 0.0, 0.0), 4095202);
+    fails = fails + check(palette_rgb(4, 0.37, 2.5, 0.25), 10197915);
+    fails = fails + check(palette_rgb(4, 0.81, 0.0, 0.0), 15132390);
+    return fails;
+}
+
+// Exit code = number of failed checks; 0 means every check passed.
+fn main() -> i64 {
+    let fails: i64 = check_points() + check_frames() + check_palettes();
+    print(fails);
+    return fails;
 }
