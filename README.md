@@ -114,6 +114,12 @@ Palettes: Electric, Fire, Ocean, Neon, Grayscale, Psychedelic, Plasma, Galaxy.
 | `scripts/extract-shaders.mjs` | Extracts the inline shaders for validation |
 | `.github/workflows/ci.yml` | CI: MIND checks and shader validation |
 
+## Community
+
+- **Discussions:** <https://github.com/star-ga/mind/discussions> — questions,
+  ideas and help for fractal-voyager and the wider MIND ecosystem.
+- **Discord:** <https://mindlang.dev/discord> — the MindLang community server.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
