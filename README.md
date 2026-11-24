@@ -28,7 +28,7 @@ It has two parts:
 ## Status
 
 - The web explorer runs from this repository as-is; no build step.
-- The MIND reference compiles with the released `mindc` v0.10.2 and passes its checks. `mindc run` also needs the MIND CPU runtime, which the public release does not include; `scripts/run-checks.sh` builds the same kernel from `mindc`'s MLIR output with a stock LLVM toolchain instead, and that is what CI runs.
+- The MIND reference compiles with the released `mindc` v0.10.4 and passes its checks. `mindc run` also needs the MIND CPU runtime, which the public release does not include; `scripts/run-checks.sh` builds the same kernel from `mindc`'s MLIR output with a stock LLVM toolchain instead, and that is what CI runs.
 - The shaders are written by hand. The public `mindc` release does not generate WGSL or GLSL; the MIND kernel is a checked reference for the shader maths, not their source.
 - CI compiles and runs the MIND checks and validates every shader (WGSL with naga, GLSL with glslang).
 
@@ -57,7 +57,7 @@ WebGPU is used by default in Chromium-based browsers; every other browser starts
 Requires `mindc` and an LLVM toolchain with `mlir-opt`, `mlir-translate` and `clang` on `PATH` (CI uses LLVM 20 on Ubuntu 24.04).
 
 ```bash
-curl -sSL https://mindlang.dev/install.sh | sh   # installs mindc
+curl -sSL https://mindlang.dev/install.sh | MIND_VERSION=v0.10.4 sh   # installs mindc v0.10.4
 mindc check src/main.mind                        # format, lint and type check
 scripts/run-checks.sh                            # build with LLVM, run the checks
 ```
