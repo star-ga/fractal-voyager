@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  MIND_VERSION: v0.10.2
+  MIND_VERSION: v0.10.4
   NAGA_VERSION: 30.0.1
 
 jobs:
