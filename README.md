@@ -57,7 +57,7 @@ WebGPU is used by default in Chromium-based browsers; every other browser starts
 Requires `mindc` and an LLVM toolchain with `mlir-opt`, `mlir-translate` and `clang` on `PATH` (CI uses LLVM 20 on Ubuntu 24.04).
 
 ```bash
-curl -sSL https://mindlang.dev/install.sh | MIND_VERSION=v0.10.4 sh   # installs mindc v0.10.4
+curl -sSL https://mindlang.dev/install.sh | sh   # installs mindc
 mindc check src/main.mind                        # format, lint and type check
 scripts/run-checks.sh                            # build with LLVM, run the checks
 ```
